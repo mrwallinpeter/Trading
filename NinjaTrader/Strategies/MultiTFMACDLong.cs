@@ -58,15 +58,28 @@ namespace NinjaTrader.NinjaScript.Strategies
         private const int    ATRPeriod       = 14;
         private const double ATRMultiplier   = 1.5;
 
+        // ── Session filter properties (HHMMSS format, exchange time zone) ─────
+        [NinjaScriptProperty]
+        [Display(Name = "Session Start (HHMMSS)", GroupName = "Session Filter", Order = 1,
+                 Description = "Earliest time entries are allowed, in HHMMSS exchange-time format. For MES1! use CT: 84500 = 8:45 AM CT (9:45 AM ET).")]
+        public int SessionStart { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Session End (HHMMSS)", GroupName = "Session Filter", Order = 2,
+                 Description = "Last time a new entry is allowed, in HHMMSS exchange-time format. For MES1! use CT: 143000 = 2:30 PM CT (3:30 PM ET). RTH closes at 3:15 PM CT.")]
+        public int SessionEnd { get; set; }
+
 
         // ─────────────────────────────────────────────────────────────────────
         protected override void OnStateChange()
         {
             if (State == State.SetDefaults)
             {
-                Description = "Long-only multi-timeframe MACD strategy (1m/5m/15m/1h).";
-                Name        = "MultiTFMACDLong";
-                Calculate   = Calculate.OnEachTick;   // intrabar detection on 1-min series
+                Description  = "Long-only multi-timeframe MACD strategy (1m/5m/15m/1h).";
+                Name         = "MultiTFMACDLong";
+                Calculate    = Calculate.OnEachTick;   // intrabar detection on 1-min series
+                SessionStart = 84500;    // 8:45 AM CT (= 9:45 AM ET) — avoids noisy open
+                SessionEnd   = 143000;   // 2:30 PM CT (= 3:30 PM ET) — avoids last 45 min before RTH close
 
                 EntriesPerDirection          = 1;
                 EntryHandling                = EntryHandling.AllEntries;
@@ -125,11 +138,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             // ── 5-MINUTE SERIES: signal detection and exit ───────────────────
             if (BarsInProgress == 1)
             {
-                // Only process once per new 5-minute bar — all logic uses closed bars
-                if (!IsFirstTickOfBar)
-                    return;
-
-                // EXIT on 5-min bar close: histogram turned down
+                // EXIT: checked on every tick using closed bars — closed bars don't
+                // change mid-bar so this is stable, but fires as soon as the new bar opens
                 if (Position.MarketPosition == MarketPosition.Long)
                 {
                     if (macd5Min.Diff[1] < macd5Min.Diff[2])
@@ -144,14 +154,18 @@ namespace NinjaTrader.NinjaScript.Strategies
                 bool confirm15m = macd15Min.Diff[1] < 0 &&
                                   macd15Min.Diff[1] > macd15Min.Diff[2];
 
-                // True cross: just-closed 5-min bar above zero, prior bar was at or below zero
-                bool fiveMinCrossUp = macd5Min.Diff[1] > 0 && macd5Min.Diff[2] <= 0;
+                // Intrabar cross: current forming 5-min bar just crossed above zero
+                bool fiveMinCrossUp = macd5Min.Diff[0] > 0 && macd5Min.Diff[1] <= 0;
 
                 if (!fiveMinSignalActive && fiveMinCrossUp && confirm15m)
                 {
                     fiveMinSignalActive = true;
-                    fiveMinSignalTime   = Times[1][1];   // timestamp of the just-closed 5-min bar
+                    fiveMinSignalTime   = Times[1][0];   // timestamp of the current forming 5-min bar
                 }
+
+                // Invalidate intrabar if the histogram drops back to zero or below
+                if (fiveMinSignalActive && macd5Min.Diff[0] <= 0)
+                    fiveMinSignalActive = false;
 
                 return;
             }
@@ -170,6 +184,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 fiveMinSignalActive = false;
                 return;
             }
+
+            // Session time filter — no new entries outside liquid hours
+            int now = ToTime(Time[0]);
+            if (now < SessionStart || now >= SessionEnd)
+                return;
 
             if (!fiveMinSignalActive)
                 return;
