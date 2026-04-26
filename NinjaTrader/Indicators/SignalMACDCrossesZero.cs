@@ -73,9 +73,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Calculate   = Calculate.OnEachTick;
                 IsOverlay   = false;
 
-                MACDFast   = 5;
-                MACDSlow   = 36;
-                MACDSmooth = 5;
+                MACDFast          = 5;
+                MACDSlow          = 36;
+                MACDSmooth        = 5;
+                RecoveryThreshold = 80;
 
                 // Sub-panel histogram: ±1 for 5m signals, ±2 for 15m signals
                 AddPlot(new Stroke(Brushes.Lime, 6), PlotStyle.Bar, "Signal");
@@ -123,16 +124,16 @@ namespace NinjaTrader.NinjaScript.Indicators
             double h15     = macd15m.Diff[0];
             double h15Prev = macd15m.Diff[1];
 
-            // "Rising" = last closed bar higher than the bar before it (closed bars only)
-            bool rising15m  = macd15m.Diff[1] > macd15m.Diff[2];
-            bool rising1h   = macd1h.Diff[1]  > macd1h.Diff[2];
-            bool falling15m = macd15m.Diff[1] < macd15m.Diff[2];
-            bool falling1h  = macd1h.Diff[1]  < macd1h.Diff[2];
+            // Higher-timeframe trend confirmation (closed bars only)
+            bool confirm15mBull = IsRecovering(macd15m, CurrentBars[1], RecoveryThreshold);
+            bool confirm15mBear = IsDeclining(macd15m,  CurrentBars[1], RecoveryThreshold);
+            bool confirm1hBull  = IsRecovering(macd1h,  CurrentBars[2], RecoveryThreshold);
+            bool confirm1hBear  = IsDeclining(macd1h,   CurrentBars[2], RecoveryThreshold);
 
             string alertSound = NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert1.wav";
 
             // ── 5-min bullish cross: histogram crosses zero from below ──────────
-            if (h5 > 0 && h5Prev <= 0 && rising15m && CurrentBar != last5mBullBar)
+            if (h5 > 0 && h5Prev <= 0 && confirm15mBull && CurrentBar != last5mBullBar)
             {
                 last5mBullBar = CurrentBar;
                 Draw.ArrowUp(this, "5mBull_" + CurrentBar, false, 0,
@@ -144,7 +145,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             // ── 5-min bearish cross: histogram crosses zero from above ──────────
-            if (h5 < 0 && h5Prev >= 0 && falling15m && CurrentBar != last5mBearBar)
+            if (h5 < 0 && h5Prev >= 0 && confirm15mBear && CurrentBar != last5mBearBar)
             {
                 last5mBearBar = CurrentBar;
                 Draw.ArrowDown(this, "5mBear_" + CurrentBar, false, 0,
@@ -156,7 +157,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             // ── 15-min bullish cross: histogram crosses zero from below ─────────
-            if (h15 > 0 && h15Prev <= 0 && rising1h && CurrentBar != last15mBullBar)
+            if (h15 > 0 && h15Prev <= 0 && confirm1hBull && CurrentBar != last15mBullBar)
             {
                 last15mBullBar = CurrentBar;
                 Draw.ArrowUp(this, "15mBull_" + CurrentBar, false, 0,
@@ -168,7 +169,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             // ── 15-min bearish cross: histogram crosses zero from above ─────────
-            if (h15 < 0 && h15Prev >= 0 && falling1h && CurrentBar != last15mBearBar)
+            if (h15 < 0 && h15Prev >= 0 && confirm1hBear && CurrentBar != last15mBearBar)
             {
                 last15mBearBar = CurrentBar;
                 Draw.ArrowDown(this, "15mBear_" + CurrentBar, false, 0,
@@ -178,6 +179,59 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Values[0][0]      = -2;
                 PlotBrushes[0][0] = Brushes.Orange;
             }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // Histogram below zero, found its minimum, and has been rising >= threshold% since
+        private bool IsRecovering(MACD macd, int barsCount, int thresholdPct)
+        {
+            if (barsCount < 3)          return false;
+            if (macd.Diff[1] >= 0)      return false; // last closed bar must be below zero
+
+            int lookback = Math.Min(barsCount - 1, 100);
+            int minIdx   = 1;
+            double minVal = macd.Diff[1];
+
+            for (int i = 1; i <= lookback; i++)
+            {
+                if (macd.Diff[i] >= 0) break; // end of below-zero run
+                if (macd.Diff[i] < minVal) { minVal = macd.Diff[i]; minIdx = i; }
+            }
+
+            int recoveryBars = minIdx - 1; // closed bars between minimum and last closed
+            if (recoveryBars <= 0) return false;
+
+            int risingCount = 0;
+            for (int i = minIdx - 1; i >= 1; i--)
+                if (macd.Diff[i] > macd.Diff[i + 1]) risingCount++;
+
+            return (risingCount * 100.0 / recoveryBars) >= thresholdPct;
+        }
+
+        // Histogram above zero, found its peak, and has been falling >= threshold% since
+        private bool IsDeclining(MACD macd, int barsCount, int thresholdPct)
+        {
+            if (barsCount < 3)          return false;
+            if (macd.Diff[1] <= 0)      return false; // last closed bar must be above zero
+
+            int lookback = Math.Min(barsCount - 1, 100);
+            int maxIdx   = 1;
+            double maxVal = macd.Diff[1];
+
+            for (int i = 1; i <= lookback; i++)
+            {
+                if (macd.Diff[i] <= 0) break; // end of above-zero run
+                if (macd.Diff[i] > maxVal) { maxVal = macd.Diff[i]; maxIdx = i; }
+            }
+
+            int declineBars = maxIdx - 1;
+            if (declineBars <= 0) return false;
+
+            int fallingCount = 0;
+            for (int i = maxIdx - 1; i >= 1; i--)
+                if (macd.Diff[i] < macd.Diff[i + 1]) fallingCount++;
+
+            return (fallingCount * 100.0 / declineBars) >= thresholdPct;
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -194,6 +248,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         [NinjaScriptProperty]
         [Display(Name = "Smooth Period", GroupName = "MACD Parameters", Order = 3)]
         public int MACDSmooth { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "Recovery Threshold %", GroupName = "Signal Parameters", Order = 1)]
+        public int RecoveryThreshold { get; set; }
 
         #endregion
     }
