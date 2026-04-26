@@ -73,10 +73,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 Calculate   = Calculate.OnEachTick;
                 IsOverlay   = false;
 
-                MACDFast          = 5;
-                MACDSlow          = 36;
-                MACDSmooth        = 5;
-                RecoveryThreshold = 80;
+                MACDFast               = 5;
+                MACDSlow               = 36;
+                MACDSmooth             = 5;
+                RecoveryThreshold      = 80;
+                BelowZeroBarThreshold  = 4;
 
                 // Sub-panel histogram: ±1 for 5m signals, ±2 for 15m signals
                 AddPlot(new Stroke(Brushes.Lime, 6), PlotStyle.Bar, "Signal");
@@ -127,8 +128,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             // Higher-timeframe trend confirmation (closed bars only)
             bool confirm15mBull = IsRecovering(macd15m, CurrentBars[1], RecoveryThreshold);
             bool confirm15mBear = IsDeclining(macd15m,  CurrentBars[1], RecoveryThreshold);
-            bool confirm1hBull  = IsRecovering(macd1h,  CurrentBars[2], RecoveryThreshold);
-            bool confirm1hBear  = IsDeclining(macd1h,   CurrentBars[2], RecoveryThreshold);
+            bool confirm1hBull  = !IsRecentlyBelowZero(macd1h, CurrentBars[2], BelowZeroBarThreshold);
+            bool confirm1hBear  = !IsRecentlyBelowZero(macd1h, CurrentBars[2], BelowZeroBarThreshold);
 
             string alertSound = NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert1.wav";
 
@@ -208,6 +209,21 @@ namespace NinjaTrader.NinjaScript.Indicators
             return (risingCount * 100.0 / recoveryBars) >= thresholdPct;
         }
 
+        // Block entry if histogram is below zero and crossed there only recently (within maxBars)
+        private bool IsRecentlyBelowZero(MACD macd, int barsCount, int maxBars)
+        {
+            if (macd.Diff[1] >= 0) return false; // above zero — no restriction
+
+            int lookback = Math.Min(barsCount - 1, maxBars + 1);
+            int count    = 0;
+            for (int i = 1; i <= lookback; i++)
+            {
+                if (macd.Diff[i] < 0) count++;
+                else break;
+            }
+            return count <= maxBars;
+        }
+
         // Histogram above zero, found its peak, and has been falling >= threshold% since
         private bool IsDeclining(MACD macd, int barsCount, int thresholdPct)
         {
@@ -253,6 +269,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Range(1, 100)]
         [Display(Name = "Recovery Threshold %", GroupName = "Signal Parameters", Order = 1)]
         public int RecoveryThreshold { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 50)]
+        [Display(Name = "1h Below-Zero Bar Threshold", GroupName = "Signal Parameters", Order = 2)]
+        public int BelowZeroBarThreshold { get; set; }
 
         #endregion
     }
